@@ -1,0 +1,141 @@
+name: Update Widgy Date Glass
+
+on:
+  schedule:
+    # Self-healing watchdog: six checks per hour, away from the top of the hour.
+    # The renderer always resolves the current day in Asia/Jerusalem.
+    - cron: "7,17,27,37,47,57 * * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Test day (auto = current day in Israel)"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - sun
+          - mon
+          - tue
+          - wed
+          - thu
+          - fri
+          - sat
+
+permissions:
+  contents: write
+
+concurrency:
+  group: widgy-date-glass
+  cancel-in-progress: true
+
+jobs:
+  update-date-glass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Pillow
+        run: python -m pip install --quiet pillow
+
+      - name: Build exact selected_date_current.png
+        env:
+          DAY_OVERRIDE: ${{ github.event.inputs.day }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          from PIL import Image, ImageChops
+          import hashlib
+          import os
+          import sys
+
+          source = Path("selected_date_glass.png")
+          output = Path("selected_date_current.png")
+
+          # Exact positions calibrated to the seven Widgy calendar cells.
+          positions = [0, 158, 317, 475, 633, 792, 950]
+          labels = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+          canvas_width = 1078
+          canvas_height = 128
+
+          override_map = {
+              "sun": 0,
+              "mon": 1,
+              "tue": 2,
+              "wed": 3,
+              "thu": 4,
+              "fri": 5,
+              "sat": 6,
+          }
+
+          override = (os.environ.get("DAY_OVERRIDE") or "auto").strip().lower()
+
+          if override == "auto":
+              now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+              weekday = (now.weekday() + 1) % 7
+              print(f"Israel time: {now.isoformat()}")
+          elif override in override_map:
+              weekday = override_map[override]
+              print(f"Manual override: {override}")
+          else:
+              raise SystemExit(f"Unknown DAY_OVERRIDE: {override}")
+
+          if not source.exists():
+              raise SystemExit("selected_date_glass.png was not found in the repository root.")
+
+          approved = Image.open(source).convert("RGBA")
+          if approved.size != (128, 128):
+              raise SystemExit(
+                  f"selected_date_glass.png must be 128x128, got {approved.size}."
+              )
+
+          canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+          canvas.alpha_composite(approved, (positions[weekday], 0))
+
+          if output.exists():
+              try:
+                  old = Image.open(output).convert("RGBA")
+                  if old.size == canvas.size and ImageChops.difference(old, canvas).getbbox() is None:
+                      print(f"No change needed. Glass is already on {labels[weekday]}.")
+                      sys.exit(0)
+              except Exception as exc:
+                  print(f"Existing output could not be compared cleanly: {exc}")
+
+          canvas.save(output, optimize=True)
+
+          verify = Image.open(output).convert("RGBA")
+          if verify.size != (canvas_width, canvas_height):
+              raise SystemExit(f"Unexpected output size: {verify.size}")
+
+          digest = hashlib.sha256(output.read_bytes()).hexdigest()
+          print(f"Updated {output} -> {labels[weekday]} (Israel time).")
+          print(f"SHA256: {digest}")
+          PY
+
+      - name: Commit only when the PNG changed
+        run: |
+          if git diff --quiet -- selected_date_current.png; then
+            echo "selected_date_current.png is already correct."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add selected_date_current.png
+          git commit -m "Update Widgy date glass"
+
+          # Be resilient to unrelated repository commits landing during the run.
+          git pull --rebase origin main
+          git push origin HEAD:main
