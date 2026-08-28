@@ -2,11 +2,17 @@ name: Update Widgy Date Glass
 
 on:
   schedule:
-    # GitHub cron runs in UTC.
-    # This retry window covers midnight in Israel in both summer time (UTC+3)
-    # and winter time (UTC+2), while staying away from the top of each hour.
-    - cron: "4,14,24,34,44,54 21-23 * * *"
-    - cron: "4,14,24,34,44,54 0 * * *"
+    # GitHub cron uses UTC.
+    # Israel midnight:
+    #   IDT (UTC+3): 21:00 UTC
+    #   IST (UTC+2): 22:00 UTC
+    #
+    # Multiple staggered retries avoid the top of the hour and give
+    # GitHub several chances to run. The script itself uses
+    # Asia/Jerusalem, so every run always selects the correct local day.
+    - cron: "7,17,27,37,47,57 21-23 * * *"
+    - cron: "7,17,27,37,47,57 0-2 * * *"
+
   workflow_dispatch:
     inputs:
       day:
@@ -29,7 +35,7 @@ permissions:
 
 concurrency:
   group: widgy-date-glass
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   update-date-glass:
@@ -38,12 +44,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -84,18 +90,24 @@ jobs:
 
           override = (os.environ.get("DAY_OVERRIDE") or "auto").strip().lower()
 
+          now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+
           if override == "auto":
-              now = datetime.now(ZoneInfo("Asia/Jerusalem"))
               weekday = (now.weekday() + 1) % 7
               print(f"Israel time: {now.isoformat()}")
           elif override in override_map:
               weekday = override_map[override]
               print(f"Manual override: {override}")
+              print(f"Israel time: {now.isoformat()}")
           else:
               raise SystemExit(f"Unknown DAY_OVERRIDE: {override}")
 
+          print(f"Target day: {labels[weekday]}")
+
           if not source.exists():
-              raise SystemExit("selected_date_glass.png was not found in the repository root.")
+              raise SystemExit(
+                  "selected_date_glass.png was not found in the repository root."
+              )
 
           approved = Image.open(source).convert("RGBA")
           if approved.size != (128, 128):
@@ -103,17 +115,27 @@ jobs:
                   f"selected_date_glass.png must be 128x128, got {approved.size}."
               )
 
-          canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+          canvas = Image.new(
+              "RGBA", (canvas_width, canvas_height), (0, 0, 0, 0)
+          )
           canvas.alpha_composite(approved, (positions[weekday], 0))
 
           if output.exists():
               try:
                   old = Image.open(output).convert("RGBA")
-                  if old.size == canvas.size and ImageChops.difference(old, canvas).getbbox() is None:
-                      print(f"No change needed. Glass is already on {labels[weekday]}.")
+                  if (
+                      old.size == canvas.size
+                      and ImageChops.difference(old, canvas).getbbox() is None
+                  ):
+                      print(
+                          f"No change needed. Glass is already on "
+                          f"{labels[weekday]}."
+                      )
                       sys.exit(0)
               except Exception as exc:
-                  print(f"Existing output could not be compared cleanly: {exc}")
+                  print(
+                      f"Existing output could not be compared cleanly: {exc}"
+                  )
 
           canvas.save(output, optimize=True)
 
@@ -122,7 +144,10 @@ jobs:
               raise SystemExit(f"Unexpected output size: {verify.size}")
 
           digest = hashlib.sha256(output.read_bytes()).hexdigest()
-          print(f"Updated {output} -> {labels[weekday]} (Israel time).")
+          print(
+              f"Updated {output} -> {labels[weekday]} "
+              f"(Israel time)."
+          )
           print(f"SHA256: {digest}")
           PY
 
@@ -134,10 +159,12 @@ jobs:
           fi
 
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add selected_date_current.png
           git commit -m "Update Widgy date glass"
 
-          # Be resilient to unrelated repository commits landing during the run.
+          # Handle unrelated commits that may land while this run is active.
           git pull --rebase origin main
           git push origin HEAD:main
