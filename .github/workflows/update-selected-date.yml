@@ -1,1 +1,130 @@
+name: Widgy Date Glass Watchdog
 
+on:
+  schedule:
+    # GitHub Actions cron is UTC.
+    # Run every 15 minutes so the repository always has a fresh Israel-date heartbeat.
+    - cron: "2,17,32,47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: widgy-date-glass-watchdog
+  cancel-in-progress: true
+
+jobs:
+  validate-and-refresh-single-date-glass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Pillow
+        run: python -m pip install --quiet pillow
+
+      - name: Validate single selected_date_glass.png
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import hashlib
+
+          path = Path("selected_date_glass.png")
+
+          if not path.exists():
+              raise SystemExit("ERROR: selected_date_glass.png is missing.")
+
+          with Image.open(path) as im:
+              rgba = im.convert("RGBA")
+
+              if rgba.size != (1024, 1024):
+                  raise SystemExit(
+                      f"ERROR: selected_date_glass.png must be 1024x1024; got {rgba.size}."
+                  )
+
+              alpha = rgba.getchannel("A")
+              bbox = alpha.getbbox()
+              if bbox is None:
+                  raise SystemExit("ERROR: selected_date_glass.png is fully transparent.")
+
+              nonzero = sum(1 for a in alpha.getdata() if a > 0)
+              total = 1024 * 1024
+              ratio = nonzero / total
+
+              if ratio < 0.05 or ratio > 0.98:
+                  raise SystemExit(
+                      f"ERROR: suspicious alpha coverage {ratio:.3f}."
+                  )
+
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          print("selected_date_glass.png: OK")
+          print("size: 1024x1024")
+          print(f"alpha bbox: {bbox}")
+          print(f"sha256: {digest}")
+          PY
+
+      - name: Build Israel date heartbeat
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          import json
+
+          israel = ZoneInfo("Asia/Jerusalem")
+          now_local = datetime.now(israel)
+          now_utc = datetime.now(timezone.utc)
+
+          payload = {
+              "date": now_local.strftime("%Y-%m-%d"),
+              "day": now_local.day,
+              "month": now_local.month,
+              "year": now_local.year,
+              "weekday": now_local.strftime("%A"),
+              "timezone": "Asia/Jerusalem",
+              "updated_at_local": now_local.isoformat(timespec="seconds"),
+              "updated_at_utc": now_utc.isoformat(timespec="seconds").replace("+00:00", "Z"),
+              "asset": "selected_date_glass.png",
+              "asset_mode": "single"
+          }
+
+          out = Path("selected_date_state.json")
+          serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+          # Keep the file fresh every run. This gives Widgy a changing remote resource
+          # that can be used as a reliable heartbeat/cache-buster if the JSON is wired to it.
+          out.write_text(serialized, encoding="utf-8")
+
+          print(serialized)
+          PY
+
+      - name: Commit heartbeat only when repository content changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add selected_date_state.json
+
+          if git diff --cached --quiet; then
+            echo "No repository change required."
+            exit 0
+          fi
+
+          git commit -m "Update Widgy date heartbeat"
+          git push
+
+      - name: Confirm single-asset architecture
+        run: |
+          echo "Single date-glass asset: selected_date_glass.png"
+          echo "No selected_date_current.png or second date-glass asset is used."
+          echo "Date selection should be performed by the Widgy JSON."
+          echo "selected_date_state.json provides an independent Israel-date heartbeat."
