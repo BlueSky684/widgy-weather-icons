@@ -2,8 +2,8 @@ name: Widgy Date Glass Watchdog
 
 on:
   schedule:
-    # GitHub Actions cron is UTC.
-    # Run every 15 minutes so the repository always has a fresh Israel-date heartbeat.
+    # GitHub Actions cron uses UTC.
+    # Run every 15 minutes for a frequent Israel-date heartbeat.
     - cron: "2,17,32,47 * * * *"
   workflow_dispatch:
 
@@ -20,8 +20,12 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Check out repository
+      - name: Check out main branch
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -53,6 +57,7 @@ jobs:
 
               alpha = rgba.getchannel("A")
               bbox = alpha.getbbox()
+
               if bbox is None:
                   raise SystemExit("ERROR: selected_date_glass.png is fully transparent.")
 
@@ -97,34 +102,68 @@ jobs:
               "asset_mode": "single"
           }
 
-          out = Path("selected_date_state.json")
-          serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+          path = Path("selected_date_state.json")
+          path.write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8"
+          )
 
-          # Keep the file fresh every run. This gives Widgy a changing remote resource
-          # that can be used as a reliable heartbeat/cache-buster if the JSON is wired to it.
-          out.write_text(serialized, encoding="utf-8")
+          if not path.exists() or path.stat().st_size == 0:
+              raise SystemExit("ERROR: selected_date_state.json was not created correctly.")
 
-          print(serialized)
+          print(path.read_text(encoding="utf-8"))
           PY
 
-      - name: Commit heartbeat only when repository content changed
+      - name: Verify heartbeat exists before commit
         run: |
+          test -s selected_date_state.json
+          echo "Heartbeat file exists:"
+          ls -lh selected_date_state.json
+          cat selected_date_state.json
+
+      - name: Commit and push heartbeat to main
+        run: |
+          set -e
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add selected_date_state.json
+          git add -f selected_date_state.json
+
+          echo "Git status before commit:"
+          git status --short
 
           if git diff --cached --quiet; then
-            echo "No repository change required."
-            exit 0
+            echo "Heartbeat content is already current; no commit required."
+          else
+            git commit -m "Update Widgy date heartbeat"
+
+            # Rebase once against the latest main in case another workflow/user commit landed.
+            git pull --rebase origin main
+            git push origin HEAD:main
           fi
 
-          git commit -m "Update Widgy date heartbeat"
-          git push
+      - name: Verify heartbeat is tracked in repository
+        run: |
+          set -e
+
+          if ! git ls-files --error-unmatch selected_date_state.json >/dev/null 2>&1; then
+            echo "ERROR: selected_date_state.json is not tracked by git."
+            exit 1
+          fi
+
+          git fetch origin main
+          if ! git show origin/main:selected_date_state.json >/dev/null 2>&1; then
+            echo "ERROR: selected_date_state.json is not present on origin/main."
+            exit 1
+          fi
+
+          echo "Remote heartbeat confirmed on origin/main:"
+          git show origin/main:selected_date_state.json
 
       - name: Confirm single-asset architecture
         run: |
           echo "Single date-glass asset: selected_date_glass.png"
           echo "No selected_date_current.png or second date-glass asset is used."
-          echo "Date selection should be performed by the Widgy JSON."
-          echo "selected_date_state.json provides an independent Israel-date heartbeat."
+          echo "Date selection is performed by the Widgy JSON."
+          echo "selected_date_state.json is generated in Asia/Jerusalem and committed to main."
