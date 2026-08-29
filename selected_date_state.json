@@ -1,12 +1,7 @@
 {
   "date": "2026-08-29",
-  "day": 29,
-  "month": 8,
-  "year": 2026,
-  "weekday": "Saturday",
+  "weekday": "SAT",
   "timezone": "Asia/Jerusalem",
-  "updated_at_local": "2026-08-29T20:50:21+03:00",
-  "updated_at_utc": "2026-08-29T17:50:21Z",
-  "asset": "selected_date_glass.png",
-  "asset_mode": "single"
+  "asset": "selected_date_current.png",
+  "sha256": "cdb73b3ea482485af38206e2ee34dd53f967ce4d8830b63964ed41229eb05fb3"
 }
